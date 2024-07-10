@@ -4,7 +4,6 @@ import json
 import logging
 import time
 import requests
-import pandas as pd
 from oauthlib.oauth2 import BackendApplicationClient
 from requests_oauthlib import OAuth2Session
 from urllib.parse import urljoin
@@ -31,6 +30,7 @@ class LoggingAdapter(requests.adapters.HTTPAdapter):
         response = super(LoggingAdapter, self).send(request, **kwargs)
         LOG.info("Response received with status: %s", response.status_code)
         if not response.ok:
+            LOG.error("Response content: %s", response.text)
             raise RuntimeError(f'Unexpected response status code: {response.status_code}')
         return response
 
@@ -77,11 +77,15 @@ class BDL:
         if response.status_code == 200:
             LOG.info("Connection to Bloomberg API successful")
         else:
-            LOG.error("Failed to connect to Bloomberg API")
+            LOG.error("Failed to connect to Bloomberg API: %s", response.text)
 
     def get_catalog_id(self):
         catalogs_url = urljoin(self.host, '/eap/catalogs/')
         response = self.session.get(catalogs_url)
+        if response.status_code != 200:
+            LOG.error("Failed to get catalog ID: %s", response.text)
+            raise RuntimeError("Failed to get catalog ID")
+        
         catalogs = response.json().get('contains', [])
         for catalog in catalogs:
             if catalog['subscriptionType'] == 'scheduled':
@@ -94,8 +98,8 @@ class BDL:
         params = {'prefix': request_name}
         response = self.session.get(responses_url, params=params)
         if response.status_code != 200:
-            LOG.error("Failed to list responses")
-            raise RuntimeError("Failed to list responses")        
+            LOG.error("Failed to list responses: %s", response.text)
+            raise RuntimeError("Failed to list responses")
         return response.json()
 
     def poll_for_response(self, request_id, request_name):
@@ -111,7 +115,7 @@ class BDL:
             time.sleep(10)
         raise RuntimeError(f"Response not received within {reply_timeout_minutes} minutes")
     
-    def download_response(self, request_id, request_name,):
+    def download_response(self, request_id, request_name):
         """
         Download the response for a given request_name and request_id.
         """
@@ -124,12 +128,34 @@ class BDL:
         file_url = urljoin(self.host, f'/eap/catalogs/{catalog_id}/content/responses/{output_key}')
         response = self.session.get(file_url, stream=True)
         if response.status_code != 200:
+            LOG.error("Failed to download file: %s", response.text)
             raise RuntimeError(f"Failed to download file")
         
         data = response.content
         return data
+    
+    def validate_period(self, period):
+        valid_periods = ["daily", "weekly", "monthly", "quarterly", "yearly"]
+        if period not in valid_periods:
+            raise ValueError(f"Invalid period: {period}. Must be one of {valid_periods}.")
 
-    def bdh(self, tickers, flds, start_date, end_date):
+    def validate_currency(self, currency):
+        if not isinstance(currency, str) or len(currency) != 3 or not currency.isupper():
+            raise ValueError("Invalid currency. Must be a 3-character uppercase string.")
+
+    def validate_date(self, date_str):
+        try:
+            datetime.datetime.strptime(date_str, '%Y-%m-%d')
+        except ValueError:
+            raise ValueError(f"Invalid date format: {date_str}. Must be in YYYY-MM-DD format.")
+
+    def bdh(self, tickers, flds, end_date, start_date='1900-01-01', period='daily', currency='BRL'):
+
+        self.validate_period(period)
+        self.validate_currency(currency)
+        self.validate_date(start_date)
+        self.validate_date(end_date)
+
         catalog_id = self.get_catalog_id()
         account_url = urljoin(self.host, f'/eap/catalogs/{catalog_id}/requests/')
         request_date = datetime.datetime.now().strftime('%Y%m%d')
@@ -146,16 +172,18 @@ class BDL:
                 '@type': 'HistoryFieldList',
                 'contains': [{'mnemonic': field} for field in flds]
             },
-            'trigger': {'@type': 'SubmitTrigger', "frequency": "once"},
+            'trigger': {'@type': 'SubmitTrigger'},
             'runtimeOptions': {
                 '@type': 'HistoryRuntimeOptions',
-                'dateRange': {'@type': 'IntervalDateRange', 'startDate': start_date, 'endDate': end_date}
+                'dateRange': {'@type': 'IntervalDateRange', 'startDate': start_date, 'endDate': end_date},
+                'period': period,
+                'historyPriceCurrency': currency
             },
             'formatting': {'@type': 'MediaType', 'outputMediaType': 'application/json'}
         }
         response = self.session.post(account_url, json=request_payload)
         if response.status_code != 201:
-            LOG.error("Failed to submit request")
+            LOG.error("Failed to submit request: %s", response.text)
             raise RuntimeError("Failed to submit request")
         request_id = response.json()['request']['identifier']
         LOG.info("Request ID: %s", request_id)

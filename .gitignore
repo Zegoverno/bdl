@@ -1,4 +1,6 @@
 # .gitignore
 *.pyc
-__pycache__/
-credentials/
+__pycache__/*
+credentials/*
+bdl/__pycache__/*
+venv/*
