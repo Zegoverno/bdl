@@ -20,7 +20,7 @@ with io.open(path.join(here, "requirements.txt"), encoding="utf-8") as f:
 
 
 setup(
-    name='bdl',
+    name='zen-bdl',
     version=version,
     description='Bloomberg Data License REST API wrapper',
     author='José Governo',
