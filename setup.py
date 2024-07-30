@@ -40,7 +40,6 @@ setup(
         ],
     },
     packages=find_packages(exclude=["contrib", "docs", "tests", "examples"]),
-    package_dir={'': 'bdl'},
     install_requires=requirements,
     python_requires=">=3.6",
     include_package_data=True,
