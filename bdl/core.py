@@ -102,7 +102,7 @@ class BDL:
             raise RuntimeError("Failed to list responses")
         return response.json()
 
-    def poll_for_response(self, request_id, request_name):
+    def poll_for_response(self, request_id, request_name, wait):
         reply_timeout_minutes = 45
         reply_timeout = datetime.timedelta(minutes=reply_timeout_minutes)
         expiration_timestamp = datetime.datetime.now(tz=datetime.timezone.utc) + reply_timeout        
@@ -112,14 +112,16 @@ class BDL:
                 if output['metadata']['DL_REQUEST_ID'] == request_id:
                     LOG.info('Response is ready')
                     return output['key']
+            if not wait:                
+                raise RuntimeError("File not ready")
             time.sleep(10)
         raise RuntimeError(f"Response not received within {reply_timeout_minutes} minutes")
     
-    def download_response(self, request_id, request_name):
+    def download_response(self, request_id, request_name, wait):
         """
         Download the response for a given request_name and request_id.
         """
-        output_key = self.poll_for_response(request_id, request_name)
+        output_key = self.poll_for_response(request_id, request_name, wait)
         data = self.download_data(output_key)
         return data
 
@@ -149,7 +151,7 @@ class BDL:
         except ValueError:
             raise ValueError(f"Invalid date format: {date_str}. Must be in YYYY-MM-DD format.")
 
-    def bdh(self, tickers, flds, end_date, start_date='1900-01-01', period='daily', currency='BRL'):
+    def bdh(self, tickers, flds, end_date, start_date='1900-01-01', period='daily', currency=None, output='application/json', wait=True):
 
         self.validate_period(period)
         self.validate_currency(currency)
@@ -166,7 +168,7 @@ class BDL:
             'description': 'Historical data request',
             'universe': {
                 '@type': 'Universe',
-                'contains': [{'@type': 'Identifier', 'identifierType': 'TICKER', 'identifierValue': ticker} for ticker in tickers]
+                'contains': [{'@type': 'Identifier', 'identifierType': ticker['type'], 'identifierValue': ticker['name']} for ticker in tickers]
             },
             'fieldList': {
                 '@type': 'HistoryFieldList',
@@ -179,7 +181,7 @@ class BDL:
                 'period': period,
                 'historyPriceCurrency': currency
             },
-            'formatting': {'@type': 'MediaType', 'outputMediaType': 'application/json'}
+            'formatting': {'@type': 'MediaType', 'outputMediaType': output}
         }
         response = self.session.post(account_url, json=request_payload)
         if response.status_code != 201:
@@ -187,5 +189,41 @@ class BDL:
             raise RuntimeError("Failed to submit request")
         request_id = response.json()['request']['identifier']
         LOG.info("Request ID: %s", request_id)
-        data = self.download_response(request_id, request_name)
+        try:
+            data = self.download_response(request_id, request_name, wait)
+        except Exception as e:  # Specify the exception type
+            return request_id, request_name, e
+        return data
+
+    def bdd(self, tickers, flds, output='application/json', wait=True):
+        
+        catalog_id = self.get_catalog_id()
+        account_url = urljoin(self.host, f'/eap/catalogs/{catalog_id}/requests/')
+        request_date = datetime.datetime.now().strftime('%Y%m%d')
+        request_name = "BDLD"+request_date
+        request_payload = {
+            '@type': 'DataRequest',
+            'name': request_name,
+            'description': 'Get data request',
+            'universe': {
+                '@type': 'Universe',
+                'contains': [{'@type': 'Identifier', 'identifierType': ticker['type'], 'identifierValue': ticker['name']} for ticker in tickers]
+            },
+            'fieldList': {
+                '@type': 'DataFieldList',
+                'contains': [{'mnemonic': field} for field in flds]
+            },
+            'trigger': {'@type': 'SubmitTrigger'},
+            'formatting': {'@type': 'MediaType', 'outputMediaType': output}
+        }
+        response = self.session.post(account_url, json=request_payload)
+        if response.status_code != 201:
+            LOG.error("Failed to submit request: %s", response.text)
+            raise RuntimeError("Failed to submit request")
+        request_id = response.json()['request']['identifier']
+        LOG.info("Request ID: %s", request_id)
+        try:
+            data = self.download_response(request_id, request_name, wait)
+        except Exception as e:  # Specify the exception type
+            return request_id, request_name, e
         return data
